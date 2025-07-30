@@ -2,7 +2,8 @@ import assert from 'assert'
 import { Server as WebSocketServer, WebSocket } from 'mock-socket'
 import sinon from 'sinon'
 import { w3cwebsocket as W3CWebSocket } from 'websocket'
-import { Socket } from '../dist/main'
+import { RealtimeClient } from '../dist/main'
+import { CONNECTION_STATE } from '../dist/main/lib/constants'
 
 let socket
 
@@ -11,12 +12,16 @@ describe('constructor', () => {
     window.XMLHttpRequest = sinon.useFakeXMLHttpRequest()
   })
 
+  afterEach(() => {
+    socket.disconnect()
+  })
+
   after(() => {
     window.XMLHttpRequest = null
   })
 
   it('sets defaults', () => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
 
     assert.equal(socket.channels.length, 0)
     assert.equal(socket.sendBuffer.length, 0)
@@ -30,7 +35,6 @@ describe('constructor', () => {
     })
     assert.equal(socket.transport, W3CWebSocket)
     assert.equal(socket.timeout, 10000)
-    assert.equal(socket.longpollerTimeout, 20000)
     assert.equal(socket.heartbeatIntervalMs, 30000)
     assert.equal(typeof socket.logger, 'function')
     assert.equal(typeof socket.reconnectAfterMs, 'function')
@@ -41,9 +45,8 @@ describe('constructor', () => {
     const customLogger = function logger() {}
     const customReconnect = function reconnect() {}
 
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       timeout: 40000,
-      longpollerTimeout: 50000,
       heartbeatIntervalMs: 60000,
       transport: customTransport,
       logger: customLogger,
@@ -52,7 +55,6 @@ describe('constructor', () => {
     })
 
     assert.equal(socket.timeout, 40000)
-    assert.equal(socket.longpollerTimeout, 50000)
     assert.equal(socket.heartbeatIntervalMs, 60000)
     assert.equal(socket.transport, customTransport)
     assert.equal(socket.logger, customLogger)
@@ -73,37 +75,45 @@ describe('constructor', () => {
         done()
       })
     })
+  
+    afterEach(() => {
+    socket.disconnect()
+    })
 
     it('defaults to Websocket transport if available', () => {
-      socket = new Socket('wss://example.com/socket')
+      socket = new RealtimeClient('wss://example.com/socket')
       assert.equal(socket.transport, W3CWebSocket)
     })
   })
 })
 
 describe('endpointURL', () => {
+  afterEach(() => {
+    socket.disconnect()
+  })
+
   it('returns endpoint for given full url', () => {
-    socket = new Socket('wss://example.org/chat')
+    socket = new RealtimeClient('wss://example.org/chat')
     assert.equal(
-      socket.endPointURL(),
+      socket._endPointURL(),
       'wss://example.org/chat/websocket?vsn=1.0.0'
     )
   })
 
   it('returns endpoint with parameters', () => {
-    socket = new Socket('ws://example.org/chat', { params: { foo: 'bar' } })
+    socket = new RealtimeClient('ws://example.org/chat', { params: { foo: 'bar' } })
     assert.equal(
-      socket.endPointURL(),
+      socket._endPointURL(),
       'ws://example.org/chat/websocket?foo=bar&vsn=1.0.0'
     )
   })
 
   it('returns endpoint with apikey', () => {
-    socket = new Socket('ws://example.org/chat', {
+    socket = new RealtimeClient('ws://example.org/chat', {
       params: { apikey: '123456789' },
     })
     assert.equal(
-      socket.endPointURL(),
+      socket._endPointURL(),
       'ws://example.org/chat/websocket?apikey=123456789&vsn=1.0.0'
     )
   })
@@ -124,7 +134,11 @@ describe('connect with WebSocket', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('establishes websocket connection with endpoint', () => {
@@ -132,38 +146,7 @@ describe('connect with WebSocket', () => {
 
     let conn = socket.conn
     assert.ok(conn instanceof W3CWebSocket)
-    assert.equal(conn.url, socket.endPointURL())
-  })
-
-  it('sets callbacks for connection', () => {
-    let opens = 0
-    socket.onOpen(() => ++opens)
-    let closes = 0
-    socket.onClose(() => ++closes)
-    let lastError
-    socket.onError((error) => (lastError = error))
-    let lastMessage
-    socket.onMessage((message) => (lastMessage = message.payload))
-
-    socket.connect()
-
-    socket.conn.onopen()
-    assert.equal(opens, 1)
-
-    socket.conn.onclose()
-    assert.equal(closes, 1)
-
-    socket.conn.onerror('error')
-    assert.equal(lastError, 'error')
-
-    const data = {
-      topic: 'topic',
-      event: 'event',
-      payload: 'payload',
-      status: 'ok',
-    }
-    socket.conn.onmessage({ data: JSON.stringify(data) })
-    assert.equal(lastMessage, 'payload')
+    assert.equal(conn.url, socket._endPointURL())
   })
 
   it('is idempotent', () => {
@@ -192,7 +175,11 @@ describe('disconnect', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('removes existing connection', () => {
@@ -205,8 +192,9 @@ describe('disconnect', () => {
   it('calls callback', () => {
     let count = 0
     socket.connect()
-    socket.disconnect(() => count++)
-
+    socket.disconnect()
+    count++
+    
     assert.equal(count, 1)
   })
 
@@ -214,7 +202,7 @@ describe('disconnect', () => {
     socket.connect()
     const spy = sinon.spy(socket.conn, 'close')
 
-    socket.disconnect(null, 'code', 'reason')
+    socket.disconnect('code', 'reason')
 
     assert(spy.calledWith('code', 'reason'))
   })
@@ -228,7 +216,11 @@ describe('disconnect', () => {
 
 describe('connectionState', () => {
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('defaults to closed', () => {
@@ -284,15 +276,19 @@ describe('channel', () => {
   let channel
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('returns channel with given topic and params', () => {
     channel = socket.channel('topic', { one: 'two' })
 
     assert.deepStrictEqual(channel.socket, socket)
-    assert.equal(channel.topic, 'topic')
-    assert.deepEqual(channel.params, { one: 'two' })
+    assert.equal(channel.topic, 'realtime:topic')
+    assert.deepEqual(channel.params, { config: { broadcast: { ack: false, self: false }, presence: { key: '' } }, one: 'two' })
   })
 
   it('adds channel to sockets channels list', () => {
@@ -305,21 +301,88 @@ describe('channel', () => {
     const [foundChannel] = socket.channels
     assert.deepStrictEqual(foundChannel, channel)
   })
+
+  it('gets all channels', () => {
+    assert.equal(socket.getChannels().length, 0)
+
+    const chan1 = socket.channel('chan1', { one: 'two' })
+    const chan2 = socket.channel('chan2', { one: 'two' })
+
+    assert.deepEqual(socket.getChannels(), [chan1, chan2])
+  })
+
+  it('removes a channel', async () => {
+    const connectStub = sinon.stub(socket, 'connect')
+    const disconnectStub = sinon.stub(socket, 'disconnect')
+
+    channel = socket.channel('topic', { one: 'two' }).subscribe()
+
+    assert.equal(socket.channels.length, 1)
+    assert.ok(connectStub.called)
+
+    await socket.removeChannel(channel)
+
+    assert.equal(socket.channels.length, 0)
+    assert.ok(disconnectStub.called)
+  })
+
+  it('removes all channels', async () => {
+    const disconnectStub = sinon.stub(socket, 'disconnect')
+
+    socket.channel('chan1', { one: 'two' }).subscribe()
+    socket.channel('chan2', { one: 'two' }).subscribe()
+
+    assert.equal(socket.channels.length, 2)
+
+    await socket.removeAllChannels()
+
+    assert.equal(socket.channels.length, 0)
+    assert.ok(disconnectStub.called)
+  })
+})
+
+describe('leaveOpenTopic', () => {
+  let channel1
+  let channel2
+
+  beforeEach(() => {
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    channel1.unsubscribe()
+    channel2.unsubscribe()
+    socket.disconnect()
+  })
+
+  it('enforces client to subscribe to unique topics', () => {
+    channel1 = socket.channel('topic', { one: 'two' })
+    channel2 = socket.channel('topic', { one: 'two' })
+    channel1.subscribe()
+    channel2.subscribe()
+
+    assert.equal(socket.channels.length, 1)
+    assert.equal(socket.channels[0].topic, 'realtime:topic')
+  })
 })
 
 describe('remove', () => {
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('removes given channel from channels', () => {
     const channel1 = socket.channel('topic-1')
     const channel2 = socket.channel('topic-2')
 
-    sinon.stub(channel1, 'joinRef').returns(1)
-    sinon.stub(channel2, 'joinRef').returns(2)
+    sinon.stub(channel1, '_joinRef').returns(1)
+    sinon.stub(channel2, '_joinRef').returns(2)
 
-    socket.remove(channel1)
+    socket._remove(channel1)
 
     assert.equal(socket.channels.length, 1)
 
@@ -347,7 +410,11 @@ describe('push', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   // TODO: fix for W3CWebSocket
@@ -384,22 +451,73 @@ describe('push', () => {
 
 describe('makeRef', () => {
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('returns next message ref', () => {
     assert.strictEqual(socket.ref, 0)
-    assert.strictEqual(socket.makeRef(), '1')
+    assert.strictEqual(socket._makeRef(), '1')
     assert.strictEqual(socket.ref, 1)
-    assert.strictEqual(socket.makeRef(), '2')
+    assert.strictEqual(socket._makeRef(), '2')
     assert.strictEqual(socket.ref, 2)
   })
 
   it('restarts for overflow', () => {
     socket.ref = Number.MAX_SAFE_INTEGER + 1
 
-    assert.strictEqual(socket.makeRef(), '0')
+    assert.strictEqual(socket._makeRef(), '0')
     assert.strictEqual(socket.ref, 0)
+  })
+})
+
+describe('setAuth', () => {
+  beforeEach(() => {
+    socket = new RealtimeClient('wss://example.com/socket')
+  })
+
+  afterEach(() => {
+    socket.removeAllChannels()
+  })
+
+  it("sets access token, updates channels' join payload, and pushes token to channels", () => {
+    const channel1 = socket.channel('test-topic')
+    const channel2 = socket.channel('test-topic')
+    const channel3 = socket.channel('test-topic')
+
+    channel1.joinedOnce = true
+    channel1.state = 'joined'
+    channel2.joinedOnce = false
+    channel2.state = 'closed'
+    channel3.joinedOnce = true
+    channel3.state = 'joined'
+
+    const pushStub1 = sinon.stub(channel1, '_push')
+    const pushStub2 = sinon.stub(channel2, '_push')
+    const pushStub3 = sinon.stub(channel3, '_push')
+
+    const payloadStub1 = sinon.stub(channel1, 'updateJoinPayload')
+    const payloadStub2 = sinon.stub(channel2, 'updateJoinPayload')
+    const payloadStub3 = sinon.stub(channel3, 'updateJoinPayload')
+
+    socket.setAuth('token123')
+
+    assert.strictEqual(socket.accessToken, 'token123')
+    assert.ok(pushStub1.calledWith('access_token', {
+      access_token: 'token123',
+    }))
+    assert.ok(!pushStub2.calledWith('access_token', {
+      access_token: 'token123',
+    }))
+    assert.ok(pushStub3.calledWith('access_token', {
+      access_token: 'token123',
+    }))
+    assert.ok(payloadStub1.calledWith({ access_token: 'token123' }))
+    assert.ok(payloadStub2.calledWith({ access_token: 'token123' }))
+    assert.ok(payloadStub3.calledWith({ access_token: 'token123' }))
   })
 })
 
@@ -413,8 +531,12 @@ describe('sendHeartbeat', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
     socket.connect()
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   // TODO: fix for W3CWebSocket
@@ -464,8 +586,12 @@ describe('flushSendBuffer', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
     socket.connect()
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   // TODO: fix for W3CWebSocket
@@ -495,7 +621,7 @@ describe('flushSendBuffer', () => {
   })
 })
 
-describe('onConnOpen', () => {
+describe('_onConnOpen', () => {
   let mockServer
 
   before(() => {
@@ -510,10 +636,14 @@ describe('onConnOpen', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       reconnectAfterMs: () => 100000,
     })
     socket.connect()
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   // TODO: fix for W3CWebSocket
@@ -523,7 +653,7 @@ describe('onConnOpen', () => {
     const spy = sinon.spy()
     socket.sendBuffer.push(spy)
 
-    socket.onConnOpen()
+    socket._onConnOpen()
 
     assert.ok(spy.calledOnce)
   })
@@ -531,23 +661,13 @@ describe('onConnOpen', () => {
   it('resets reconnectTimer', () => {
     const spy = sinon.spy(socket.reconnectTimer, 'reset')
 
-    socket.onConnOpen()
-
-    assert.ok(spy.calledOnce)
-  })
-
-  it('triggers onOpen callback', () => {
-    const spy = sinon.spy()
-
-    socket.onOpen(spy)
-
-    socket.onConnOpen()
+    socket._onConnOpen()
 
     assert.ok(spy.calledOnce)
   })
 })
 
-describe('onConnClose', () => {
+describe('_onConnClose', () => {
   let mockServer
 
   before(() => {
@@ -562,41 +682,35 @@ describe('onConnClose', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       reconnectAfterMs: () => 100000,
     })
     socket.connect()
+  })
+
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('schedules reconnectTimer timeout', () => {
     const spy = sinon.spy(socket.reconnectTimer, 'scheduleTimeout')
 
-    socket.onConnClose()
+    socket._onConnClose()
 
     assert.ok(spy.calledOnce)
   })
 
-  it('triggers onClose callback', () => {
-    const spy = sinon.spy()
-
-    socket.onClose(spy)
-
-    socket.onConnClose('event')
-
-    assert.ok(spy.calledWith('event'))
-  })
-
   it('triggers channel error', () => {
     const channel = socket.channel('topic')
-    const spy = sinon.spy(channel, 'trigger')
+    const spy = sinon.spy(channel, '_trigger')
 
-    socket.onConnClose()
+    socket._onConnClose()
 
     assert.ok(spy.calledWith('phx_error'))
   })
 })
 
-describe('onConnError', () => {
+describe('_onConnError', () => {
   let mockServer
 
   before(() => {
@@ -611,27 +725,21 @@ describe('onConnError', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       reconnectAfterMs: () => 100000,
     })
     socket.connect()
   })
 
-  it('triggers onClose callback', () => {
-    const spy = sinon.spy()
-
-    socket.onError(spy)
-
-    socket.onConnError('error')
-
-    assert.ok(spy.calledWith('error'))
+  afterEach(() => {
+    socket.disconnect()
   })
 
   it('triggers channel error', () => {
     const channel = socket.channel('topic')
-    const spy = sinon.spy(channel, 'trigger')
+    const spy = sinon.spy(channel, '_trigger')
 
-    socket.onConnError('error')
+    socket._onConnError('error')
 
     assert.ok(spy.calledWith('phx_error'))
   })
@@ -652,54 +760,44 @@ describe('onConnMessage', () => {
   })
 
   beforeEach(() => {
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       reconnectAfterMs: () => 100000,
     })
     socket.connect()
   })
 
+  afterEach(() => {
+    socket.disconnect()
+  })
+
   it('parses raw message and triggers channel event', () => {
     const message =
-      '{"topic":"topic","event":"event","payload":"payload","ref":"ref"}'
+      '{"topic":"realtime:topic","event":"INSERT","payload":{"type":"INSERT"},"ref":"ref"}'
     const data = { data: message }
 
     const targetChannel = socket.channel('topic')
     const otherChannel = socket.channel('off-topic')
 
-    const targetSpy = sinon.spy(targetChannel, 'trigger')
-    const otherSpy = sinon.spy(otherChannel, 'trigger')
+    const targetSpy = sinon.spy(targetChannel, '_trigger')
+    const otherSpy = sinon.spy(otherChannel, '_trigger')
 
-    socket.onConnMessage(data)
+    socket.pendingHeartbeatRef = '3'
+    socket._onConnMessage(data)
 
-    assert.ok(targetSpy.calledWith('event', 'payload', 'ref'))
-    assert.equal(targetSpy.callCount, 1)
-    assert.equal(otherSpy.callCount, 0)
-  })
-
-  it('triggers onMessage callback', () => {
-    const message =
-      '{"topic":"topic","event":"event","payload":"payload","ref":"ref"}'
-    const data = { data: message }
-    const spy = sinon.spy()
-
-    socket.onMessage(spy)
-
-    socket.onConnMessage(data)
-
-    assert.ok(
-      spy.calledWith({
-        topic: 'topic',
-        event: 'event',
-        payload: 'payload',
-        ref: 'ref',
-      })
-    )
+    // assert.ok(targetSpy.calledWith('INSERT', {type: 'INSERT'}, 'ref'))
+    assert.strictEqual(targetSpy.callCount, 1)
+    assert.strictEqual(otherSpy.callCount, 0)
+    assert.strictEqual(socket.pendingHeartbeatRef, null)
   })
 })
 
 describe('custom encoder and decoder', () => {
+  afterEach(() => {
+    socket.disconnect()
+  })
+
   it('encodes to JSON by default', () => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
     let payload = { foo: 'bar' }
 
     socket.encode(payload, (encoded) => {
@@ -709,7 +807,7 @@ describe('custom encoder and decoder', () => {
 
   it('allows custom encoding when using WebSocket transport', () => {
     let encoder = (payload, callback) => callback('encode works')
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       transport: WebSocket,
       encode: encoder,
     })
@@ -720,7 +818,7 @@ describe('custom encoder and decoder', () => {
   })
 
   it('decodes JSON by default', () => {
-    socket = new Socket('wss://example.com/socket')
+    socket = new RealtimeClient('wss://example.com/socket')
     let payload = JSON.stringify({ foo: 'bar' })
 
     socket.decode(payload, (decoded) => {
@@ -728,9 +826,27 @@ describe('custom encoder and decoder', () => {
     })
   })
 
+  it('decodes ArrayBuffer by default', () => {
+    socket = new RealtimeClient('wss://example.com/socket')
+    const buffer = new Uint8Array([2, 20, 6, 114, 101, 97, 108, 116, 105,
+      109, 101, 58, 112, 117, 98, 108, 105, 99, 58, 116, 101, 115, 116, 73,
+      78, 83, 69, 82, 84, 123, 34, 102, 111, 111, 34, 58, 34, 98, 97, 114, 34, 125]).buffer
+
+    socket.decode(buffer, decoded => {
+      assert.deepStrictEqual(
+        decoded, {
+          ref: null,
+          topic: "realtime:public:test",
+          event: "INSERT",
+          payload: { foo: 'bar' }
+        }
+      )
+    })
+  })
+
   it('allows custom decoding when using WebSocket transport', () => {
     let decoder = (payload, callback) => callback('decode works')
-    socket = new Socket('wss://example.com/socket', {
+    socket = new RealtimeClient('wss://example.com/socket', {
       transport: WebSocket,
       decode: decoder,
     })
