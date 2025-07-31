@@ -4,11 +4,11 @@
         <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/tealbase-logo-wordmark--dark.svg">
       <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/tealbase-logo-wordmark--light.svg">
-      <img alt="Tealbase Logo" width="300" src="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/logo-preview.jpg">
+      <img alt="tealbase Logo" width="300" src="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/logo-preview.jpg">
     </picture>
   </a>
 
-  <h1 align="center">Tealbase Realtime Client</h1>
+  <h1 align="center">tealbase Realtime Client</h1>
 
   <h3 align="center">Send ephemeral messages with <b>Broadcast</b>, track and synchronize state with <b>Presence</b>, and listen to database changes with <b>Postgres Change Data Capture (CDC)</b>.</h3>
 
@@ -23,7 +23,7 @@
 
 # Overview
 
-This client enables you to use the following Tealbase Realtime's features:
+This client enables you to use the following tealbase Realtime's features:
 
 - **Broadcast**: send ephemeral messages from client to clients with minimal latency. Use cases include sharing cursor positions between users.
 - **Presence**: track and synchronize shared state across clients with the help of CRDTs. Use cases include tracking which users are currently viewing a specific webpage.
@@ -71,7 +71,7 @@ channel.subscribe((status, err) => {
 
 ### Notes:
 
-- `REALTIME_URL` is `'ws://localhost:4000/socket'` when developing locally and `'wss://<project_ref>.tealbase.co/realtime/v1'` when connecting to your Tealbase project.
+- `REALTIME_URL` is `'ws://localhost:4000/socket'` when developing locally and `'wss://<project_ref>.tealbase.co/realtime/v1'` when connecting to your tealbase project.
 - `API_KEY` is a JWT whose claims must contain `exp` and `role` (existing database role).
 - Channel name can be any `string`.
 
