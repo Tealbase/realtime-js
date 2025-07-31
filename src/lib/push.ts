@@ -1,5 +1,5 @@
 import { DEFAULT_TIMEOUT } from '../lib/constants'
-import Channel from '../channel'
+import type RealtimeChannel from '../RealtimeChannel'
 
 export default class Push {
   sent: boolean = false
@@ -7,7 +7,7 @@ export default class Push {
   ref: string = ''
   receivedResp: {
     status: string
-    response: Function
+    response: { [key: string]: any }
   } | null = null
   recHooks: {
     status: string
@@ -24,9 +24,9 @@ export default class Push {
    * @param timeout The push timeout in milliseconds
    */
   constructor(
-    public channel: Channel,
+    public channel: RealtimeChannel,
     public event: string,
-    public payload: any = {},
+    public payload: { [key: string]: any } = {},
     public timeout: number = DEFAULT_TIMEOUT
   ) {}
 
@@ -51,7 +51,12 @@ export default class Push {
       event: this.event,
       payload: this.payload,
       ref: this.ref,
+      join_ref: this.channel._joinRef(),
     })
+  }
+
+  updatePayload(payload: { [key: string]: any }): void {
+    this.payload = { ...this.payload, ...payload }
   }
 
   receive(status: string, callback: Function) {
@@ -67,15 +72,17 @@ export default class Push {
     if (this.timeoutTimer) {
       return
     }
-    this.ref = this.channel.socket.makeRef()
-    this.refEvent = this.channel.replyEventName(this.ref)
+    this.ref = this.channel.socket._makeRef()
+    this.refEvent = this.channel._replyEventName(this.ref)
 
-    this.channel.on(this.refEvent, (payload: any) => {
+    const callback = (payload: any) => {
       this._cancelRefEvent()
       this._cancelTimeout()
       this.receivedResp = payload
       this._matchReceive(payload)
-    })
+    }
+
+    this.channel._on(this.refEvent, {}, callback)
 
     this.timeoutTimer = <any>setTimeout(() => {
       this.trigger('timeout', {})
@@ -83,14 +90,21 @@ export default class Push {
   }
 
   trigger(status: string, response: any) {
-    if (this.refEvent) this.channel.trigger(this.refEvent, { status, response })
+    if (this.refEvent)
+      this.channel._trigger(this.refEvent, { status, response })
+  }
+
+  destroy() {
+    this._cancelRefEvent()
+    this._cancelTimeout()
   }
 
   private _cancelRefEvent() {
     if (!this.refEvent) {
       return
     }
-    this.channel.off(this.refEvent)
+
+    this.channel._off(this.refEvent, {})
   }
 
   private _cancelTimeout() {

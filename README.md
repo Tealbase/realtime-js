@@ -1,163 +1,221 @@
-# Realtime Client
+<br />
+<p align="center">
+  <a href="https://tealbase.io">
+        <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/tealbase-logo-wordmark--dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/tealbase-logo-wordmark--light.svg">
+      <img alt="tealbase Logo" width="300" src="https://raw.githubusercontent.com/tealbase/tealbase/master/packages/common/assets/images/logo-preview.jpg">
+    </picture>
+  </a>
 
-Listens to changes in a PostgreSQL Database and via websockets.
+  <h1 align="center">tealbase Realtime Client</h1>
 
-This is for usage with Tealbase [Realtime](https://github.com/tealbase/realtime) server.
+  <h3 align="center">Send ephemeral messages with <b>Broadcast</b>, track and synchronize state with <b>Presence</b>, and listen to database changes with <b>Postgres Change Data Capture (CDC)</b>.</h3>
 
-## Usage
+  <p align="center">
+    <a href="https://tealbase.com/docs/guides/realtime">Guides</a>
+    ·
+    <a href="https://tealbase.com/docs/reference/javascript">Reference Docs</a>
+    ·
+    <a href="https://multiplayer.dev">Multiplayer Demo</a>
+  </p>
+</p>
 
+# Overview
 
-### Creating a Socket connection
+This client enables you to use the following tealbase Realtime's features:
 
-You can set up one connection to be used across the whole app.
+- **Broadcast**: send ephemeral messages from client to clients with minimal latency. Use cases include sharing cursor positions between users.
+- **Presence**: track and synchronize shared state across clients with the help of CRDTs. Use cases include tracking which users are currently viewing a specific webpage.
+- **Postgres Change Data Capture (CDC)**: listen for changes in your PostgreSQL database and send them to clients.
 
-```js
-import { Socket } from '@tealbase/realtime-js'
+# Usage
 
-var socket = new Socket(process.env.REALTIME_URL)
-socket.connect()
+## Installing the Package
+
+```bash
+npm install @tealbase/realtime-js
 ```
 
-**Socket Hooks**
+## Creating a Channel
 
 ```js
-socket.onOpen(() => console.log('Socket opened.'))
-socket.onClose(() => console.log('Socket closed.'))
-socket.onError((e) => console.log('Socket error', e.message))
+import { RealtimeClient } from '@tealbase/realtime-js'
+
+const client = new RealtimeClient(REALTIME_URL, {
+  params: {
+    apikey: API_KEY
+  },
+})
+
+const channel = client.channel('test-channel', {})
+
+channel.subscribe((status, err) => {
+  if (status === 'SUBSCRIBED') {
+    console.log('Connected!')
+  }
+
+  if (status === 'CHANNEL_ERROR') {
+    console.log(`There was an error subscribing to channel: ${err.message}`)
+  }
+
+  if (status === 'TIMED_OUT') {
+    console.log('Realtime server did not respond in time.')
+  }
+
+  if (status === 'CLOSED') {
+    console.log('Realtime channel was unexpectedly closed.')
+  }
+})
 ```
 
-### Subscribing to events
+### Notes:
 
-You can listen to `INSERT`, `UPDATE`, `DELETE`, or all `*` events.
+- `REALTIME_URL` is `'ws://localhost:4000/socket'` when developing locally and `'wss://<project_ref>.tealbase.co/realtime/v1'` when connecting to your tealbase project.
+- `API_KEY` is a JWT whose claims must contain `exp` and `role` (existing database role).
+- Channel name can be any `string`.
 
-You can subscribe to events on the whole database, schema, table, or individual columns using `channel()`. Channels are multiplexed over the Socket connection.
+## Broadcast
 
-To join a channel, you must provide the `topic`, where a topic is either:
-
-- `realtime` - entire database
-- `realtime:{schema}` - where `{schema}` is the Postgres Schema
-- `realtime:{schema}:{table}` - where `{table}` is the Postgres table name
-- `realtime:{schema}:{table}:{col}.eq.{val}` - where `{col}` is the column name, and `{val}` is the value which you want to match
-
-
-**Examples**
+Your client can send and receive messages based on the `event`.
 
 ```js
-// Listen to events on the entire database.
-var databaseChanges = socket.channel('realtime')
-databaseChanges.on('*', (e) => console.log(e))
-databaseChanges.on('INSERT', (e) => console.log(e))
-databaseChanges.on('UPDATE', (e) => console.log(e))
-databaseChanges.on('DELETE', (e) => console.log(e))
-databaseChanges.subscribe()
+// Setup...
 
-// Listen to events on a schema, using the format `realtime:{SCHEMA}`
-var publicSchema = socket.channel('realtime:public')
-publicSchema.on('*', (e) => console.log(e))
-publicSchema.on('INSERT', (e) => console.log(e))
-publicSchema.on('UPDATE', (e) => console.log(e))
-publicSchema.on('DELETE', (e) => console.log(e))
-publicSchema.subscribe()
+const channel = client.channel('broadcast-test', { broadcast: { ack: false, self: false } })
 
-// Listen to events on a table, using the format `realtime:{SCHEMA}:{TABLE}`
-var usersTable = socket.channel('realtime:public:users')
-usersTable.on('*', (e) => console.log(e))
-usersTable.on('INSERT', (e) => console.log(e))
-usersTable.on('UPDATE', (e) => console.log(e))
-usersTable.on('DELETE', (e) => console.log(e))
-usersTable.subscribe()
+channel.on('broadcast', { event: 'some-event' }, (payload) =>
+  console.log(payload)
+)
 
-// Listen to events on a row, using the format `realtime:{SCHEMA}:{TABLE}:{COL}.eq.{VAL}`
-var rowChanges = socket.channel('realtime:public:users:id.eq.1')
-rowChanges.on('*', (e) => console.log(e))
-rowChanges.on('INSERT', (e) => console.log(e))
-rowChanges.on('UPDATE', (e) => console.log(e))
-rowChanges.on('DELETE', (e) => console.log(e))
-rowChanges.subscribe()
+channel.subscribe(async (status) => {
+  if (status === 'SUBSCRIBED') {
+    // Send message to other clients listening to 'broadcast-test' channel
+    await channel.send({
+      type: 'broadcast',
+      event: 'some-event',
+      payload: { hello: 'world' },
+    })
+  }
+})
 ```
 
-**Removing a subscription**
+### Notes:
 
-You can unsubscribe from a topic using `channel.unsubscribe()`.
+- Setting `ack` to `true` means that the `channel.send` promise will resolve once server replies with acknowledgement that it received the broadcast message request.
+- Setting `self` to `true` means that the client will receive the broadcast message it sent out.
+- Setting `private` to `true` means that the client will use RLS to determine if the user can connect or not to a given channel.
 
+## Presence
 
-**Duplicate Join Subscriptions**
-
-While the client may join any number of topics on any number of channels, the client may only hold a single subscription for each unique topic at any given time. When attempting to create a duplicate subscription, the server will close the existing channel, log a warning, and spawn a new channel for the topic. The client will have their `channel.onClose` callbacks fired for the existing channel, and the new
-channel join will have its receive hooks processed as normal.
-
-
-**Channel Hooks**
+Your client can track and sync state that's stored in the channel.
 
 ```js
-channel.onError( () => console.log("there was an error!") )
-channel.onClose( () => console.log("the channel has gone away gracefully") )
+// Setup...
+
+const channel = client.channel(
+  'presence-test',
+  {
+    config: {
+      presence: {
+        key: ''
+      }
+    }
+  }
+)
+
+channel.on('presence', { event: 'sync' }, () => {
+  console.log('Online users: ', channel.presenceState())
+})
+
+channel.on('presence', { event: 'join' }, ({ newPresences }) => {
+  console.log('New users have joined: ', newPresences)
+})
+
+channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+  console.log('Users have left: ', leftPresences)
+})
+
+channel.subscribe(async (status) => {
+  if (status === 'SUBSCRIBED') {
+    const status = await channel.track({ 'user_id': 1 })
+    console.log(status)
+  }
+})
 ```
 
-- `onError` hooks are invoked if the socket connection drops, or the channel crashes on the server. In either case, a channel rejoin is attempted automatically in an exponential backoff manner.
-- `onClose` hooks are invoked only in two cases. 1) the channel explicitly closed on the server, or 2). The client explicitly closed, by calling `channel.unsubscribe()`
+## Postgres CDC
 
-**Subscription Hooks**
+Receive database changes on the client.
 
 ```js
+// Setup...
 
-publicSchema
-  .subscribe()
-  .receive('ok', () => console.log('Connected.'))
-  .receive('error', () => console.log('Failed.'))
-  .receive('timeout', () => console.log('Timed out, retrying.'))
+const channel = client.channel('db-changes')
 
+channel.on('postgres_changes', { event: '*', schema: 'public' }, (payload) => {
+  console.log('All changes in public schema: ', payload)
+})
+
+channel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+  console.log('All inserts in messages table: ', payload)
+})
+
+channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: 'username=eq.Realtime' }, (payload) => {
+  console.log('All updates on users table when username is Realtime: ', payload)
+})
+
+channel.subscribe(async (status) => {
+  if (status === 'SUBSCRIBED') {
+    console.log('Ready to receive database changes!')
+  }
+})
 ```
 
-### Event Responses
+## Get All Channels
 
-Events are returned in the following format.
+You can see all the channels that your client has instantiatied.
 
-```ts
-type Response = {
-  // the change timestampe. eg: "2025-10-13T10:09:22Z".
-  commit_timestamp: string
+```js
+// Setup...
 
-  // the database schema. eg: "public".
-  schema: string
+client.getChannels()
+```
 
-  // the database table. eg: "users".
-  table: string
+## Cleanup
 
-  // the event type.
-  type: INSERT | UPDATE | DELETE
+It is highly recommended that you clean up your channels after you're done with them.
 
-  // all the columns for this table. See "column" type below.
-  columns: column[]
+- Remove a single channel
 
-  // the new values. eg: { "id": "9", "age": "12" }.
-  record: object
+```js
+// Setup...
 
-  // the previous values. eg: { "id": "9", "age": "11" }. Only works if the table has `REPLICATION FULL`.
-  old_record: object
-}
+const channel = client.channel('some-channel-to-remove')
 
-type column = {
-  // any special flags for the column. eg: ["key"]
-  flags: string[]
+channel.subscribe()
 
-  // the column name. eg: "user_id"
-  name: string
+client.removeChannel(channel)
+```
 
-  // the column type. eg: "uuid"
-  type: string
+- Remove all channels
 
-  // the type modifier. eg: 4294967295
-  type_modifier: number
-}
+```js
+// Setup...
+
+const channel1 = client.channel('a-channel-to-remove')
+const channel2 = client.channel('another-channel-to-remove')
+
+channel1.subscribe()
+channel2.subscribe()
+
+client.removeAllChannels()
 ```
 
 ## Credits
 
-- Original Node.js client was made by Mario Campa of [phoenix-channels](github.com/mcampa/phoenix-client).
-- API was made by authors of the [Phoenix Framework](http://www.phoenixframework.org/). See their website for complete list of authors.
+This repo draws heavily from [phoenix-js](https://github.com/phoenixframework/phoenix/tree/master/assets/js/phoenix).
 
 ## License
 
-MIT. License is the same as [phoenix-channels](https://github.com/mcampa/phoenix-client) and [Phoenix Framework](https://phoenixframework.org/).
-
+MIT.

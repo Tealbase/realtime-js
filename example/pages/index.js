@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Socket } from '@tealbase/realtime-js'
+import { RealtimeClient } from '@tealbase/realtime-js'
 import {
   NEXT_PUBLIC_tealbase_URL,
   NEXT_PUBLIC_tealbase_KEY,
 } from '../lib/constants'
 
-var socket = new Socket(NEXT_PUBLIC_tealbase_URL, {
+var socket = new RealtimeClient(NEXT_PUBLIC_tealbase_URL, {
   params: { apikey: NEXT_PUBLIC_tealbase_KEY },
 })
 
@@ -19,13 +19,6 @@ export default function IndexPage() {
   let [channelStatus, setChannelStatus] = useState('')
 
   useEffect(() => {
-    // Socket events
-    socket.onOpen(() => setSocketStatus('OPEN'))
-    socket.onClose(() => setSocketStatus('CLOSED'))
-    socket.onError((e) => {
-      setSocketStatus('ERROR')
-      console.log('Socket error', e.message)
-    })
     // Subscribe
     createSubscription()
 
@@ -39,8 +32,8 @@ export default function IndexPage() {
     publicSchema.on('DELETE', (e) => setDeletes([...deletes, e]))
 
     // Channel events
-    publicSchema.onError(() => setChannelStatus('ERROR'))
-    publicSchema.onClose(() => setChannelStatus('Closed gracefully.'))
+    publicSchema._onError(() => setChannelStatus('ERROR'))
+    publicSchema._onClose(() => setChannelStatus('Closed gracefully.'))
     publicSchema
       .subscribe()
       .receive('ok', () => setChannelStatus('SUBSCRIBED'))
