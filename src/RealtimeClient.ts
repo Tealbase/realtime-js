@@ -11,7 +11,10 @@ import {
 } from './lib/constants'
 import Timer from './lib/timer'
 import Serializer from './lib/serializer'
-import RealtimeChannel, { RealtimeChannelOptions } from './RealtimeChannel'
+import RealtimeChannel from './RealtimeChannel'
+import type { RealtimeChannelOptions } from './RealtimeChannel'
+
+type Fetch = typeof fetch
 
 export type RealtimeClientOptions = {
   transport?: WebSocket
@@ -23,6 +26,8 @@ export type RealtimeClientOptions = {
   reconnectAfterMs?: Function
   headers?: { [key: string]: string }
   params?: { [key: string]: any }
+  log_level?: 'info' | 'debug' | 'warn' | 'error'
+  fetch?: Fetch
 }
 
 export type RealtimeMessage = {
@@ -70,6 +75,7 @@ export default class RealtimeClient {
   }
   eventsPerSecondLimitMs: number = 100
   inThrottle: boolean = false
+  fetch: Fetch
 
   /**
    * Initializes the Socket.
@@ -100,6 +106,9 @@ export default class RealtimeClient {
     if (eventsPerSecond)
       this.eventsPerSecondLimitMs = Math.floor(1000 / eventsPerSecond)
 
+    const accessToken = options?.params?.apikey
+    if (accessToken) this.accessToken = accessToken
+
     this.reconnectAfterMs = options?.reconnectAfterMs
       ? options.reconnectAfterMs
       : (tries: number) => {
@@ -117,6 +126,8 @@ export default class RealtimeClient {
       this.disconnect()
       this.connect()
     }, this.reconnectAfterMs)
+
+    this.fetch = this._resolveFetch(options?.fetch)
   }
 
   /**
@@ -170,27 +181,25 @@ export default class RealtimeClient {
    * Unsubscribes and removes a single channel
    * @param channel A RealtimeChannel instance
    */
-  removeChannel(
+  async removeChannel(
     channel: RealtimeChannel
   ): Promise<RealtimeRemoveChannelResponse> {
-    return channel.unsubscribe().then((status) => {
-      if (this.channels.length === 0) {
-        this.disconnect()
-      }
-      return status
-    })
+    const status = await channel.unsubscribe()
+    if (this.channels.length === 0) {
+      this.disconnect()
+    }
+    return status
   }
 
   /**
    * Unsubscribes and removes all channels
    */
-  removeAllChannels(): Promise<RealtimeRemoveChannelResponse[]> {
-    return Promise.all(
+  async removeAllChannels(): Promise<RealtimeRemoveChannelResponse[]> {
+    const values_1 = await Promise.all(
       this.channels.map((channel) => channel.unsubscribe())
-    ).then((values) => {
-      this.disconnect()
-      return values
-    })
+    )
+    this.disconnect()
+    return values_1
   }
 
   /**
@@ -229,10 +238,6 @@ export default class RealtimeClient {
     topic: string,
     params: RealtimeChannelOptions = { config: {} }
   ): RealtimeChannel {
-    if (!this.isConnected()) {
-      this.connect()
-    }
-
     const chan = new RealtimeChannel(`realtime:${topic}`, params, this)
     this.channels.push(chan)
     return chan
@@ -280,6 +285,26 @@ export default class RealtimeClient {
         channel._push(CHANNEL_EVENTS.access_token, { access_token: token })
       }
     })
+  }
+
+  /**
+   * Use either custom fetch, if provided, or default fetch to make HTTP requests
+   *
+   * @internal
+   */
+  _resolveFetch = (customFetch?: Fetch): Fetch => {
+    let _fetch: Fetch
+    if (customFetch) {
+      _fetch = customFetch
+    } else if (typeof fetch === 'undefined') {
+      _fetch = (...args) =>
+        import('@tealbase/node-fetch' as any).then(({ default: fetch }) =>
+          fetch(...args)
+        )
+    } else {
+      _fetch = fetch
+    }
+    return (...args) => _fetch(...args)
   }
 
   /**
