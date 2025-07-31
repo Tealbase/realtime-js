@@ -134,7 +134,7 @@ export default class RealtimeChannel {
     }[]
   } = {}
   timeout: number
-  state = CHANNEL_STATES.closed
+  state: CHANNEL_STATES = CHANNEL_STATES.closed
   joinedOnce = false
   joinPush: Push
   rejoinTimer: Timer
@@ -217,9 +217,7 @@ export default class RealtimeChannel {
     if (!this.socket.isConnected()) {
       this.socket.connect()
     }
-    if (this.joinedOnce) {
-      throw `tried to subscribe multiple times. 'subscribe' can only be called a single time per channel instance`
-    } else {
+    if (this.state == CHANNEL_STATES.closed) {
       const {
         config: { broadcast, presence, private: isPrivate },
       } = this.params
@@ -279,6 +277,8 @@ export default class RealtimeChannel {
                 })
               } else {
                 this.unsubscribe()
+                this.state = CHANNEL_STATES.errored
+
                 callback?.(
                   REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR,
                   new Error(
@@ -296,6 +296,7 @@ export default class RealtimeChannel {
           }
         })
         .receive('error', (error: { [key: string]: any }) => {
+          this.state = CHANNEL_STATES.errored
           callback?.(
             REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR,
             new Error(
@@ -413,7 +414,7 @@ export default class RealtimeChannel {
   ): RealtimeChannel
   on(
     type: `${REALTIME_LISTEN_TYPES}`,
-    filter: { event: string; [key: string]: string },
+    filter: { event: string;[key: string]: string },
     callback: (payload: any) => void
   ): RealtimeChannel {
     return this._on(type, filter, callback)
@@ -511,12 +512,12 @@ export default class RealtimeChannel {
       this._trigger(CHANNEL_EVENTS.close, 'leave', this._joinRef())
     }
 
-    this.rejoinTimer.reset()
-    // Destroy joinPush to avoid connection timeouts during unscription phase
     this.joinPush.destroy()
 
-    return new Promise((resolve) => {
-      const leavePush = new Push(this, CHANNEL_EVENTS.leave, {}, timeout)
+    let leavePush: Push | null = null
+
+    return new Promise<RealtimeChannelSendResponse>((resolve) => {
+      leavePush = new Push(this, CHANNEL_EVENTS.leave, {}, timeout)
       leavePush
         .receive('ok', () => {
           onClose()
@@ -535,6 +536,19 @@ export default class RealtimeChannel {
         leavePush.trigger('ok', {})
       }
     })
+      .finally(() => {
+        leavePush?.destroy()
+      })
+  }
+  /**
+   * Teardown the channel.
+   *
+   * Destroys and stops related timers.
+   */
+  teardown() {
+    this.pushBuffer.forEach((push: Push) => push.destroy())
+    this.rejoinTimer && clearTimeout(this.rejoinTimer.timer)
+    this.joinPush.destroy()
   }
 
   /** @internal */
@@ -635,7 +649,7 @@ export default class RealtimeChannel {
                 payload.ids?.includes(bindId) &&
                 (bindEvent === '*' ||
                   bindEvent?.toLocaleLowerCase() ===
-                    payload.data?.type.toLocaleLowerCase())
+                  payload.data?.type.toLocaleLowerCase())
               )
             } else {
               const bindEvent = bind?.filter?.event?.toLocaleLowerCase()

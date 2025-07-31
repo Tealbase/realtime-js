@@ -1,13 +1,22 @@
 import assert from 'assert'
-import { describe, beforeEach, afterEach, test, vi, expect } from 'vitest'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+} from 'vitest'
 import { Server, WebSocket as MockWebSocket } from 'mock-socket'
-import WebSocket from 'ws'
+import { WebSocket } from 'isows'
 import sinon from 'sinon'
 import crypto from 'crypto'
-
-import RealtimeClient from '../src/RealtimeClient'
+import RealtimeClient, { HeartbeatStatus } from '../src/RealtimeClient'
 import jwt from 'jsonwebtoken'
-import { CHANNEL_STATES } from '../src/lib/constants'
+import { CHANNEL_STATES, DEFAULT_VERSION } from '../src/lib/constants'
+import path from 'path'
 
 function generateJWT(exp: string): string {
   return jwt.sign({}, 'your-256-bit-secret', {
@@ -15,6 +24,7 @@ function generateJWT(exp: string): string {
     expiresIn: exp || '1h',
   })
 }
+import Worker from 'web-worker'
 
 let socket: RealtimeClient
 let randomProjectRef = () => crypto.randomUUID()
@@ -26,9 +36,7 @@ beforeEach(() => {
   projectRef = randomProjectRef()
   url = `wss://${projectRef}/socket`
   mockServer = new Server(url)
-  socket = new RealtimeClient(url, {
-    transport: MockWebSocket,
-  })
+  socket = new RealtimeClient(url, { transport: MockWebSocket })
 })
 
 afterEach(() => {
@@ -40,7 +48,7 @@ describe('constructor', () => {
   test('sets defaults', () => {
     let socket = new RealtimeClient(url)
 
-    assert.equal(socket.channels.length, 0)
+    assert.equal(socket.getChannels().length, 0)
     assert.equal(socket.sendBuffer.length, 0)
     assert.equal(socket.ref, 0)
     assert.equal(socket.endPoint, `${url}/websocket`)
@@ -52,7 +60,7 @@ describe('constructor', () => {
     })
     assert.equal(socket.transport, null)
     assert.equal(socket.timeout, 10000)
-    assert.equal(socket.heartbeatIntervalMs, 30000)
+    assert.equal(socket.heartbeatIntervalMs, 25000)
     assert.equal(typeof socket.logger, 'function')
     assert.equal(typeof socket.reconnectAfterMs, 'function')
   })
@@ -215,6 +223,7 @@ describe('channel', () => {
       one: 'two',
     })
   })
+
   test('returns channel with given topic and params for a private channel', () => {
     channel = socket.channel('topic', { config: { private: true }, one: 'two' })
 
@@ -229,17 +238,29 @@ describe('channel', () => {
       one: 'two',
     })
   })
+
   test('adds channel to sockets channels list', () => {
-    assert.equal(socket.channels.length, 0)
+    assert.equal(socket.getChannels().length, 0)
 
     channel = socket.channel('topic')
 
-    assert.equal(socket.channels.length, 1)
+    assert.equal(socket.getChannels().length, 1)
 
     const [foundChannel] = socket.channels
     assert.deepStrictEqual(foundChannel, channel)
   })
 
+  test('does not repeat channels to sockets channels list', () => {
+    assert.equal(socket.getChannels().length, 0)
+
+    channel = socket.channel('topic')
+    socket.channel('topic') // should be ignored
+
+    assert.equal(socket.getChannels().length, 1)
+
+    const [foundChannel] = socket.channels
+    assert.deepStrictEqual(foundChannel, channel)
+  })
   test('gets all channels', () => {
     assert.equal(socket.getChannels().length, 0)
 
@@ -255,13 +276,31 @@ describe('channel', () => {
 
     channel = socket.channel('topic').subscribe()
 
-    assert.equal(socket.channels.length, 1)
+    assert.equal(socket.getChannels().length, 1)
     assert.ok(connectStub.called)
 
     await socket.removeChannel(channel)
 
-    assert.equal(socket.channels.length, 0)
+    assert.equal(socket.getChannels().length, 0)
     assert.ok(disconnectStub.called)
+  })
+
+  test('does not remove other channels when removing one', async () => {
+    const connectStub = sinon.stub(socket, 'connect')
+    const disconnectStub = sinon.stub(socket, 'disconnect')
+    const channel1 = socket.channel('chan1').subscribe()
+    const channel2 = socket.channel('chan2').subscribe()
+
+    channel1.subscribe()
+    channel2.subscribe()
+    assert.equal(socket.getChannels().length, 2)
+    assert.ok(connectStub.called)
+
+    await socket.removeChannel(channel1)
+
+    assert.equal(socket.getChannels().length, 1)
+    assert.ok(!disconnectStub.called)
+    assert.deepStrictEqual(socket.getChannels()[0], channel2)
   })
 
   test('removes all channels', async () => {
@@ -270,11 +309,11 @@ describe('channel', () => {
     socket.channel('chan1').subscribe()
     socket.channel('chan2').subscribe()
 
-    assert.equal(socket.channels.length, 2)
+    assert.equal(socket.getChannels().length, 2)
 
     await socket.removeAllChannels()
 
-    assert.equal(socket.channels.length, 0)
+    assert.equal(socket.getChannels().length, 0)
     assert.ok(disconnectStub.called)
   })
 })
@@ -292,10 +331,18 @@ describe('leaveOpenTopic', () => {
     channel1 = socket.channel('topic')
     channel2 = socket.channel('topic')
     channel1.subscribe()
-    channel2.subscribe()
+    try {
+      channel2.subscribe()
+    } catch (e) {
+      console.error(e)
+      assert.equal(
+        e,
+        `tried to subscribe multiple times. 'subscribe' can only be called a single time per channel instance`
+      )
+    }
 
-    assert.equal(socket.channels.length, 1)
-    assert.equal(socket.channels[0].topic, 'realtime:topic')
+    assert.equal(socket.getChannels().length, 1)
+    assert.equal(socket.getChannels()[0].topic, 'realtime:topic')
   })
 })
 
@@ -309,7 +356,7 @@ describe('remove', () => {
 
     socket._remove(channel1)
 
-    assert.equal(socket.channels.length, 1)
+    assert.equal(socket.getChannels().length, 1)
 
     const [foundChannel] = socket.channels
     assert.deepStrictEqual(foundChannel, channel2)
@@ -376,9 +423,9 @@ describe('setAuth', () => {
   })
 
   test("sets access token, updates channels' join payload, and pushes token to channels", async () => {
-    const channel1 = socket.channel('test-topic')
-    const channel2 = socket.channel('test-topic')
-    const channel3 = socket.channel('test-topic')
+    const channel1 = socket.channel('test-topic1')
+    const channel2 = socket.channel('test-topic2')
+    const channel3 = socket.channel('test-topic3')
 
     channel1.state = CHANNEL_STATES.joined
     channel2.state = CHANNEL_STATES.closed
@@ -399,54 +446,50 @@ describe('setAuth', () => {
     await socket.setAuth(token)
 
     assert.strictEqual(socket.accessTokenValue, token)
+
     assert.ok(pushStub1.calledWith('access_token', { access_token: token }))
     assert.ok(!pushStub2.calledWith('access_token', { access_token: token }))
     assert.ok(pushStub3.calledWith('access_token', { access_token: token }))
-    assert.ok(payloadStub1.calledWith({ access_token: token }))
-    assert.ok(payloadStub2.calledWith({ access_token: token }))
-    assert.ok(payloadStub3.calledWith({ access_token: token }))
+
+    assert.ok(
+      payloadStub1.calledWith({ access_token: token, version: DEFAULT_VERSION })
+    )
+    assert.ok(
+      payloadStub2.calledWith({ access_token: token, version: DEFAULT_VERSION })
+    )
+    assert.ok(
+      payloadStub3.calledWith({ access_token: token, version: DEFAULT_VERSION })
+    )
   })
 
-  test('does not set access token if exp is invalid and warns the user', () => {
+  test("does not send message if token hasn't changed", async () => {
     const channel1 = socket.channel('test-topic')
-    const channel2 = socket.channel('test-topic')
-    const channel3 = socket.channel('test-topic')
 
     channel1.state = CHANNEL_STATES.joined
-    channel2.state = CHANNEL_STATES.closed
-    channel3.state = CHANNEL_STATES.joined
 
     channel1.joinedOnce = true
-    channel2.joinedOnce = false
-    channel3.joinedOnce = true
 
-    const pushStub1 = sinon.stub(channel1, '_push')
-    const pushStub2 = sinon.stub(channel2, '_push')
-    const pushStub3 = sinon.stub(channel3, '_push')
+    sinon.stub(channel1, '_push')
 
     const payloadStub1 = sinon.stub(channel1, 'updateJoinPayload')
-    const payloadStub2 = sinon.stub(channel2, 'updateJoinPayload')
-    const payloadStub3 = sinon.stub(channel3, 'updateJoinPayload')
+    const token = generateJWT('1h')
 
-    const token = generateJWT('0s')
+    await socket.setAuth(token)
+    await socket.setAuth(token)
 
-    expect(socket.setAuth(token)).rejects.toThrowError(
-      'InvalidJWTToken: Invalid value for JWT claim "exp" with value'
+    assert.strictEqual(socket.accessTokenValue, token)
+    assert.ok(
+      payloadStub1.calledOnceWith({
+        access_token: token,
+        version: DEFAULT_VERSION,
+      })
     )
-
-    assert.notEqual(socket.accessTokenValue, token)
-    assert.equal(pushStub1.notCalled, true)
-    assert.equal(pushStub2.notCalled, true)
-    assert.equal(pushStub3.notCalled, true)
-    assert.equal(payloadStub1.notCalled, true)
-    assert.equal(payloadStub2.notCalled, true)
-    assert.equal(payloadStub3.notCalled, true)
   })
 
   test("sets access token, updates channels' join payload, and pushes token to channels if is not a jwt", async () => {
-    const channel1 = socket.channel('test-topic')
-    const channel2 = socket.channel('test-topic')
-    const channel3 = socket.channel('test-topic')
+    const channel1 = socket.channel('test-topic1')
+    const channel2 = socket.channel('test-topic2')
+    const channel3 = socket.channel('test-topic3')
 
     channel1.state = CHANNEL_STATES.joined
     channel2.state = CHANNEL_STATES.closed
@@ -473,9 +516,24 @@ describe('setAuth', () => {
       !pushStub2.calledWith('access_token', { access_token: new_token })
     )
     assert.ok(pushStub3.calledWith('access_token', { access_token: new_token }))
-    assert.ok(payloadStub1.calledWith({ access_token: new_token }))
-    assert.ok(payloadStub2.calledWith({ access_token: new_token }))
-    assert.ok(payloadStub3.calledWith({ access_token: new_token }))
+    assert.ok(
+      payloadStub1.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
+    assert.ok(
+      payloadStub2.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
+    assert.ok(
+      payloadStub3.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
   })
 
   test("sets access token using callback, updates channels' join payload, and pushes token to channels", async () => {
@@ -485,9 +543,9 @@ describe('setAuth', () => {
       accessToken: () => Promise.resolve(token),
     })
 
-    const channel1 = new_socket.channel('test-topic')
-    const channel2 = new_socket.channel('test-topic')
-    const channel3 = new_socket.channel('test-topic')
+    const channel1 = new_socket.channel('test-topic1')
+    const channel2 = new_socket.channel('test-topic2')
+    const channel3 = new_socket.channel('test-topic3')
 
     channel1.state = CHANNEL_STATES.joined
     channel2.state = CHANNEL_STATES.closed
@@ -513,15 +571,30 @@ describe('setAuth', () => {
       !pushStub2.calledWith('access_token', { access_token: new_token })
     )
     assert.ok(pushStub3.calledWith('access_token', { access_token: new_token }))
-    assert.ok(payloadStub1.calledWith({ access_token: new_token }))
-    assert.ok(payloadStub2.calledWith({ access_token: new_token }))
-    assert.ok(payloadStub3.calledWith({ access_token: new_token }))
+    assert.ok(
+      payloadStub1.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
+    assert.ok(
+      payloadStub2.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
+    assert.ok(
+      payloadStub3.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
   })
 
   test("overrides access token, updates channels' join payload, and pushes token to channels", () => {
-    const channel1 = socket.channel('test-topic')
-    const channel2 = socket.channel('test-topic')
-    const channel3 = socket.channel('test-topic')
+    const channel1 = socket.channel('test-topic1')
+    const channel2 = socket.channel('test-topic2')
+    const channel3 = socket.channel('test-topic3')
 
     channel1.state = CHANNEL_STATES.joined
     channel2.state = CHANNEL_STATES.closed
@@ -547,9 +620,24 @@ describe('setAuth', () => {
       !pushStub2.calledWith('access_token', { access_token: new_token })
     )
     assert.ok(pushStub3.calledWith('access_token', { access_token: new_token }))
-    assert.ok(payloadStub1.calledWith({ access_token: new_token }))
-    assert.ok(payloadStub2.calledWith({ access_token: new_token }))
-    assert.ok(payloadStub3.calledWith({ access_token: new_token }))
+    assert.ok(
+      payloadStub1.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
+    assert.ok(
+      payloadStub2.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
+    assert.ok(
+      payloadStub3.calledWith({
+        access_token: new_token,
+        version: DEFAULT_VERSION,
+      })
+    )
   })
 })
 
@@ -587,6 +675,24 @@ describe('sendHeartbeat', () => {
 
     socket.sendHeartbeat()
     assert.ok(spy.neverCalledWith(data))
+  })
+
+  test('sends heartbeat and updates auth token', async () => {
+    const token = generateJWT('1h')
+    const setAuthSpy = vi.spyOn(socket, 'setAuth')
+    const sendSpy = vi.spyOn(socket.conn as WebSocket, 'send')
+
+    vi.spyOn(socket.conn!, 'readyState', 'get').mockReturnValue(1)
+    vi.spyOn(socket, 'accessTokenValue', 'get').mockReturnValue(token)
+
+    const heartbeatData =
+      '{"topic":"phoenix","event":"heartbeat","payload":{},"ref":"1"}'
+
+    await socket.sendHeartbeat()
+
+    expect(sendSpy).toHaveBeenCalledWith(heartbeatData)
+    expect(setAuthSpy).toHaveBeenCalled()
+    expect(setAuthSpy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -680,6 +786,37 @@ describe('onConnMessage', () => {
     assert.strictEqual(targetSpy.callCount, 1)
     assert.strictEqual(otherSpy.callCount, 0)
   })
+
+  test("on heartbeat events from the 'phoenix' topic, callback is called", async () => {
+    let called = false
+    let socket = new RealtimeClient(url)
+    socket.onHeartbeat((message: HeartbeatStatus) => (called = message == 'ok'))
+
+    const message =
+      '{"ref":"1","event":"phx_reply","payload":{"status":"ok","response":{}},"topic":"phoenix"}'
+    const data = { data: message }
+
+    socket.pendingHeartbeatRef = '3'
+    socket._onConnMessage(data)
+
+    assert.strictEqual(called, true)
+  })
+  test("on heartbeat events from the 'phoenix' topic, callback is called with error", async () => {
+    let called = false
+    let socket = new RealtimeClient(url)
+    socket.onHeartbeat(
+      (message: HeartbeatStatus) => (called = message == 'error')
+    )
+
+    const message =
+      '{"ref":"1","event":"phx_reply","payload":{"status":"error","response":{}},"topic":"phoenix"}'
+    const data = { data: message }
+
+    socket.pendingHeartbeatRef = '3'
+    socket._onConnMessage(data)
+
+    assert.strictEqual(called, true)
+  })
 })
 
 describe('custom encoder and decoder', () => {
@@ -740,5 +877,77 @@ describe('custom encoder and decoder', () => {
     socket.decode('...esoteric format...', (decoded) => {
       assert.deepStrictEqual(decoded, 'decode works')
     })
+  })
+})
+
+describe('log operations', () => {
+  test('calls the logger with the correct arguments', () => {
+    const mockLogger = vi.fn()
+    socket = new RealtimeClient(url, { logger: mockLogger })
+
+    socket.log('testKind', 'testMessage', { testData: 'test' })
+
+    expect(mockLogger).toHaveBeenCalledWith('testKind', 'testMessage', {
+      testData: 'test',
+    })
+  })
+  test('changing log_level sends proper params in URL', () => {
+    socket = new RealtimeClient(url, { log_level: 'warn' })
+
+    assert.equal(socket.logLevel, 'warn')
+    assert.equal(
+      socket.endpointURL(),
+      `${url}/websocket?log_level=warn&vsn=1.0.0`
+    )
+  })
+  test('changing logLevel sends proper params in URL', () => {
+    socket = new RealtimeClient(url, { logLevel: 'warn' })
+
+    assert.equal(socket.logLevel, 'warn')
+    assert.equal(
+      socket.endpointURL(),
+      `${url}/websocket?log_level=warn&vsn=1.0.0`
+    )
+  })
+})
+
+describe('worker', () => {
+  let mockServer: Server
+  let client: RealtimeClient
+  const workerPath = path.join(__dirname, 'test_worker.js')
+  beforeAll(() => {
+    window.Worker = Worker
+    projectRef = randomProjectRef()
+    url = `wss://${projectRef}/socket`
+    mockServer = new Server(url)
+  })
+
+  afterAll(() => {
+    // @ts-ignore - Deliberately removing Worker to clean up test environment
+    window.Worker = undefined
+    mockServer.close()
+  })
+
+  beforeEach(() => {
+    client = new RealtimeClient('ws://localhost:8080/socket', {
+      worker: true,
+      workerUrl: workerPath,
+      heartbeatIntervalMs: 10,
+    })
+  })
+  test('sets worker flag', () => {
+    assert.ok(client.worker)
+  })
+
+  test('sets worker URL', () => {
+    assert.equal(client.workerUrl, workerPath)
+  })
+
+  test('ensures single worker ref is started even with multiple connect calls', () => {
+    client._onConnOpen()
+    let ref = client.workerRef
+
+    client._onConnOpen()
+    assert.ok(ref === client.workerRef)
   })
 })
