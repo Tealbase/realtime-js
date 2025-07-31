@@ -24,17 +24,44 @@ export type RealtimeChannelOptions = {
   }
 }
 
-export type RealtimePostgresChangesPayload<T extends { [key: string]: any }> = {
+type RealtimePostgresChangesPayloadBase = {
   schema: string
   table: string
   commit_timestamp: string
-  eventType:
-    | `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.INSERT}`
-    | `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.UPDATE}`
-    | `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.DELETE}`
-  new: T | {}
-  old: Partial<T> | {}
   errors: string[]
+}
+
+export type RealtimePostgresInsertPayload<T extends { [key: string]: any }> =
+  RealtimePostgresChangesPayloadBase & {
+    eventType: `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.INSERT}`
+    new: T
+    old: {}
+  }
+
+export type RealtimePostgresUpdatePayload<T extends { [key: string]: any }> =
+  RealtimePostgresChangesPayloadBase & {
+    eventType: `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.UPDATE}`
+    new: T
+    old: Partial<T>
+  }
+
+export type RealtimePostgresDeletePayload<T extends { [key: string]: any }> =
+  RealtimePostgresChangesPayloadBase & {
+    eventType: `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.DELETE}`
+    new: {}
+    old: Partial<T>
+  }
+
+export type RealtimePostgresChangesPayload<T extends { [key: string]: any }> =
+  | RealtimePostgresInsertPayload<T>
+  | RealtimePostgresUpdatePayload<T>
+  | RealtimePostgresDeletePayload<T>
+
+export type RealtimePostgresChangesFilter<T extends string> = {
+  event: T
+  schema: string
+  table?: string
+  filter?: string
 }
 
 export type RealtimeChannelSendResponse = 'ok' | 'timed out' | 'rate limited'
@@ -59,6 +86,11 @@ export enum REALTIME_SUBSCRIBE_STATES {
   CHANNEL_ERROR = 'CHANNEL_ERROR',
 }
 
+/** A channel is the basic building block of Realtime
+ * and narrows the scope of data flow to subscribed clients.
+ * You can think of a channel as a chatroom where participants are able to see who's online
+ * and send and receive messages.
+ **/
 export default class RealtimeChannel {
   bindings: {
     [key: string]: {
@@ -77,6 +109,7 @@ export default class RealtimeChannel {
   presence: RealtimePresence
 
   constructor(
+    /** Topic name can be any string. */
     public topic: string,
     public params: RealtimeChannelOptions = { config: {} },
     public socket: RealtimeClient
@@ -134,6 +167,7 @@ export default class RealtimeChannel {
     this.presence = new RealtimePresence(this)
   }
 
+  /** Subscribe registers your client with the server */
   subscribe(
     callback?: (status: `${REALTIME_SUBSCRIBE_STATES}`, err?: Error) => void,
     timeout = this.timeout
@@ -277,6 +311,7 @@ export default class RealtimeChannel {
     )
   }
 
+  /** Listen to messages. */
   on(
     type: `${REALTIME_LISTEN_TYPES.BROADCAST}`,
     filter: { event: string },
@@ -288,23 +323,38 @@ export default class RealtimeChannel {
   ): RealtimeChannel
   on(
     type: `${REALTIME_LISTEN_TYPES.PRESENCE}`,
-    filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS}` },
-    callback: (
-      payload:
-        | RealtimePresenceJoinPayload
-        | RealtimePresenceLeavePayload
-        | undefined
-    ) => void
+    filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS.SYNC}` },
+    callback: () => void
+  ): RealtimeChannel
+  on(
+    type: `${REALTIME_LISTEN_TYPES.PRESENCE}`,
+    filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS.JOIN}` },
+    callback: (payload: RealtimePresenceJoinPayload) => void
+  ): RealtimeChannel
+  on(
+    type: `${REALTIME_LISTEN_TYPES.PRESENCE}`,
+    filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS.LEAVE}` },
+    callback: (payload: RealtimePresenceLeavePayload) => void
   ): RealtimeChannel
   on<T extends { [key: string]: any }>(
     type: `${REALTIME_LISTEN_TYPES.POSTGRES_CHANGES}`,
-    filter: {
-      event: `${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT}`
-      schema: string
-      table?: string
-      filter?: string
-    },
+    filter: RealtimePostgresChangesFilter<`${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.ALL}`>,
     callback: (payload: RealtimePostgresChangesPayload<T>) => void
+  ): RealtimeChannel
+  on<T extends { [key: string]: any }>(
+    type: `${REALTIME_LISTEN_TYPES.POSTGRES_CHANGES}`,
+    filter: RealtimePostgresChangesFilter<`${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.INSERT}`>,
+    callback: (payload: RealtimePostgresInsertPayload<T>) => void
+  ): RealtimeChannel
+  on<T extends { [key: string]: any }>(
+    type: `${REALTIME_LISTEN_TYPES.POSTGRES_CHANGES}`,
+    filter: RealtimePostgresChangesFilter<`${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.UPDATE}`>,
+    callback: (payload: RealtimePostgresUpdatePayload<T>) => void
+  ): RealtimeChannel
+  on<T extends { [key: string]: any }>(
+    type: `${REALTIME_LISTEN_TYPES.POSTGRES_CHANGES}`,
+    filter: RealtimePostgresChangesFilter<`${REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.DELETE}`>,
+    callback: (payload: RealtimePostgresDeletePayload<T>) => void
   ): RealtimeChannel
   on(
     type: `${REALTIME_LISTEN_TYPES}`,
@@ -389,6 +439,7 @@ export default class RealtimeChannel {
     })
   }
 
+  /** @internal */
   _push(
     event: string,
     payload: { [key: string]: any },
@@ -413,19 +464,24 @@ export default class RealtimeChannel {
    *
    * Receives all events for specialized message handling before dispatching to the channel callbacks.
    * Must return the payload, modified or unmodified.
+   *
+   * @internal
    */
   _onMessage(_event: string, payload: any, _ref?: string) {
     return payload
   }
 
+  /** @internal */
   _isMember(topic: string): boolean {
     return this.topic === topic
   }
 
+  /** @internal */
   _joinRef(): string {
     return this.joinPush.ref
   }
 
+  /** @internal */
   _trigger(type: string, payload?: any, ref?: string) {
     const typeLower = type.toLocaleLowerCase()
     const { close, error, leave, join } = CHANNEL_EVENTS
@@ -498,23 +554,32 @@ export default class RealtimeChannel {
     }
   }
 
+  /** @internal */
   _isClosed(): boolean {
     return this.state === CHANNEL_STATES.closed
   }
+
+  /** @internal */
   _isJoined(): boolean {
     return this.state === CHANNEL_STATES.joined
   }
+
+  /** @internal */
   _isJoining(): boolean {
     return this.state === CHANNEL_STATES.joining
   }
+
+  /** @internal */
   _isLeaving(): boolean {
     return this.state === CHANNEL_STATES.leaving
   }
 
+  /** @internal */
   _replyEventName(ref: string): string {
     return `chan_reply_${ref}`
   }
 
+  /** @internal */
   _on(type: string, filter: { [key: string]: any }, callback: Function) {
     const typeLower = type.toLocaleLowerCase()
 
@@ -533,6 +598,7 @@ export default class RealtimeChannel {
     return this
   }
 
+  /** @internal */
   _off(type: string, filter: { [key: string]: any }) {
     const typeLower = type.toLocaleLowerCase()
 
@@ -545,6 +611,7 @@ export default class RealtimeChannel {
     return this
   }
 
+  /** @internal */
   private static isEqual(
     obj1: { [key: string]: string },
     obj2: { [key: string]: string }
@@ -562,6 +629,7 @@ export default class RealtimeChannel {
     return true
   }
 
+  /** @internal */
   private _rejoinUntilConnected() {
     this.rejoinTimer.scheduleTimeout()
     if (this.socket.isConnected()) {
@@ -571,6 +639,8 @@ export default class RealtimeChannel {
 
   /**
    * Registers a callback that will be executed when the channel closes.
+   * 
+   * @internal
    */
   private _onClose(callback: Function) {
     this._on(CHANNEL_EVENTS.close, {}, callback)
@@ -578,6 +648,8 @@ export default class RealtimeChannel {
 
   /**
    * Registers a callback that will be executed when the channel encounteres an error.
+   * 
+   * @internal
    */
   private _onError(callback: Function) {
     this._on(CHANNEL_EVENTS.error, {}, (reason: string) => callback(reason))
@@ -585,11 +657,14 @@ export default class RealtimeChannel {
 
   /**
    * Returns `true` if the socket is connected and the channel has been joined.
+   * 
+   * @internal
    */
   private _canPush(): boolean {
     return this.socket.isConnected() && this._isJoined()
   }
 
+  /** @internal */
   private _rejoin(timeout = this.timeout): void {
     if (this._isLeaving()) {
       return
@@ -599,6 +674,7 @@ export default class RealtimeChannel {
     this.joinPush.resend(timeout)
   }
 
+  /** @internal */
   private _getPayloadRecords(payload: any) {
     const records = {
       new: {},
