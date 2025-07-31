@@ -14,7 +14,7 @@ export type RealtimeChannelOptions = {
   config: {
     /**
      * self option enables client to receive message it broadcast
-     * ack option instructs server to acknowlege that broadcast message was received
+     * ack option instructs server to acknowledge that broadcast message was received
      */
     broadcast?: { self?: boolean; ack?: boolean }
     /**
@@ -311,7 +311,19 @@ export default class RealtimeChannel {
     )
   }
 
-  /** Listen to messages. */
+  /**
+   * Creates an event handler that listens to changes
+   * @param type Realtime feature (broadcast, presence, or postgres_changes)
+   * @param filter Pre-defined and custom values specific to the Realtime feature
+   * @param filter.schema Database schema
+   * @param filter.event Event to listen to. If listening to postgres_changes type
+   * then this value is one of INSERT, UPDATE, DELETE, *
+   * @param filter.filter If listening to postgres_changes type then this value is used to specify
+   * the Postgres Changes filter (eq, neq, lt, lte, gt, or gte) and value to listen to
+   * @param filter.table If listening to postgres_changes type then this value is used to specify
+   * the database table to listen to
+   * @param callback Function to be invoked when event handler is triggered
+   */
   on(
     type: `${REALTIME_LISTEN_TYPES.BROADCAST}`,
     filter: { event: string },
@@ -326,15 +338,15 @@ export default class RealtimeChannel {
     filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS.SYNC}` },
     callback: () => void
   ): RealtimeChannel
-  on(
+  on<T extends { [key: string]: any }>(
     type: `${REALTIME_LISTEN_TYPES.PRESENCE}`,
     filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS.JOIN}` },
-    callback: (payload: RealtimePresenceJoinPayload) => void
+    callback: (payload: RealtimePresenceJoinPayload<T>) => void
   ): RealtimeChannel
-  on(
+  on<T extends { [key: string]: any }>(
     type: `${REALTIME_LISTEN_TYPES.PRESENCE}`,
     filter: { event: `${REALTIME_PRESENCE_LISTEN_EVENTS.LEAVE}` },
-    callback: (payload: RealtimePresenceLeavePayload) => void
+    callback: (payload: RealtimePresenceLeavePayload<T>) => void
   ): RealtimeChannel
   on<T extends { [key: string]: any }>(
     type: `${REALTIME_LISTEN_TYPES.POSTGRES_CHANGES}`,
@@ -639,7 +651,7 @@ export default class RealtimeChannel {
 
   /**
    * Registers a callback that will be executed when the channel closes.
-   * 
+   *
    * @internal
    */
   private _onClose(callback: Function) {
@@ -648,7 +660,7 @@ export default class RealtimeChannel {
 
   /**
    * Registers a callback that will be executed when the channel encounteres an error.
-   * 
+   *
    * @internal
    */
   private _onError(callback: Function) {
@@ -657,7 +669,7 @@ export default class RealtimeChannel {
 
   /**
    * Returns `true` if the socket is connected and the channel has been joined.
-   * 
+   *
    * @internal
    */
   private _canPush(): boolean {
